@@ -3,7 +3,7 @@
 #SBATCH --time=48:00:00
 #SBATCH --cpus-per-task=32
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:L40S:4
+#SBATCH --gres=gpu:L40S:1
 #SBATCH --mem=200G
 #SBATCH --mail-user=mnov0010@student.monash.edu
 #SBATCH --mail-type=END
@@ -32,7 +32,7 @@ export WANDB_PROJECT=${WANDB_PROJECT:-eagle-perceiver-resampler}
 
 cd "$DIR/eagle/traineagle3"
 
-PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True deepspeed --num_gpus 4 main.py \
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True deepspeed --num_gpus 1 main.py \
     --deepspeed_config ds_config.json \
     --configpath config_perceiver_llama3_8b.json \
     --basepath "$DIR/models/Llama-3.1-8B-Instruct" \

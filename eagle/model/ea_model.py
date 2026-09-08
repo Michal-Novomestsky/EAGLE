@@ -52,6 +52,11 @@ class EaModel(nn.Module):
             bias = con["bias"]
         except:
             bias = True
+        if con.get("use_perceiver", False):
+            # EaglePerceiverResampler: the draft model consumes the entire
+            # residual stream, so capture every target layer's hidden states
+            # instead of the EAGLE-3 low/mid/high selection.
+            self.base_model.model.capture_all_hidden_states = True
         if use_eagle3:
             self.ea_layer = Model(config, bias=bias, total_tokens=total_token, depth=depth, top_k=top_k,
                                   threshold=threshold, path=base_model_name_or_path,load_emb=True)

@@ -35,6 +35,15 @@ from safetensors import safe_open
 from datasets import load_dataset
 import multiprocessing
 
+try:
+    from eagle.model.perceiver import PerceiverResampler
+except ImportError:
+    # traineagle3 scripts are run with cwd=eagle/traineagle3; fall back to
+    # adding the repo root to sys.path so the shared perceiver module is found.
+    import sys
+    sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+    from eagle.model.perceiver import PerceiverResampler
+
 # Copied from transformers.models.bart.modeling_bart._make_causal_mask
 def _make_causal_mask(
         input_ids_shape: torch.Size, dtype: torch.dtype, device: torch.device, past_key_values_length: int = 0
@@ -498,7 +507,31 @@ class Model(nn.Module):
         self.length = 7
         self.target_model = LlamaForCausalLM.from_pretrained(path, torch_dtype=torch.float16)
         self.target_model.eval()
-        self.fc=nn.Linear(self.hidden_size*3, self.hidden_size, bias=False)
+        self.use_perceiver = getattr(config, "use_perceiver", False)
+        if self.use_perceiver:
+            # EaglePerceiverResampler: flatten the entire target residual stream
+            # (all layers) into a single token per position with a perceiver
+            # resampler instead of concatenating 3 layers + FC.
+            self.target_num_layers = getattr(config, "target_num_layers", None)
+            assert self.target_num_layers is not None, \
+                "config.target_num_layers must be set when use_perceiver=true"
+            self.target_hidden_size = getattr(config, "target_hidden_size", config.hidden_size)
+            perceiver_dim = getattr(config, "perceiver_dim", config.hidden_size)
+            assert getattr(config, "n_latents", 1) == 1, \
+                "n_latents > 1 is not supported by the EAGLE draft decoder yet"
+            self.perceiver = PerceiverResampler(
+                num_target_layers=self.target_num_layers,
+                d_target=self.target_hidden_size,
+                dim=perceiver_dim,
+                n_heads=getattr(config, "perceiver_n_heads", 16),
+                d_ff=getattr(config, "perceiver_d_ff", 4 * perceiver_dim),
+                num_layers=getattr(config, "perceiver_num_layers", 6),
+                n_latents=getattr(config, "n_latents", 1),
+                dropout=getattr(config, "perceiver_dropout", 0.1),
+            )
+            self.target_model.model.capture_all_hidden_states = True
+        else:
+            self.fc=nn.Linear(self.hidden_size*3, self.hidden_size, bias=False)
         for param in self.target_model.parameters():
             param.requires_grad = False
 
@@ -714,10 +747,17 @@ class Model(nn.Module):
     def dataprepare(self, input_ids, attention_mask, loss_mask):
         device = input_ids.device
         outs = self.target_model(input_ids=input_ids, attention_mask=attention_mask)
-        hidden_states0 = outs.hidden_states[0]
-        hidden_states1 = outs.hidden_states[1]
-        hidden_states2 = outs.hidden_states[2]
-        hidden_states=torch.cat((hidden_states0,hidden_states1,hidden_states2),dim=-1)
+        if self.use_perceiver:
+            # capture_all_hidden_states is enabled on the target model, so
+            # outs.hidden_states holds every layer's output (no embeddings).
+            # Pack them along the feature dim -> [B, S, L*H]; the perceiver
+            # reshapes this back to [B, L, S, H] in forward().
+            hidden_states = torch.cat(list(outs.hidden_states), dim=-1)
+        else:
+            hidden_states0 = outs.hidden_states[0]
+            hidden_states1 = outs.hidden_states[1]
+            hidden_states2 = outs.hidden_states[2]
+            hidden_states=torch.cat((hidden_states0,hidden_states1,hidden_states2),dim=-1)
         # hidden_states=torch.cat((hidden_states0,hidden_states1),dim=-1)
         target = outs.logits
         target = padding(target, left=False)
@@ -756,7 +796,14 @@ class Model(nn.Module):
         if self.training and self.gradient_checkpointing and not hidden_states.requires_grad:
             hidden_states.requires_grad = True
 
-        hidden_states=self.fc(hidden_states)
+        if self.use_perceiver:
+            # packed [B, S, L*H] -> [B, L, S, H] -> perceiver -> [B, S, H]
+            hidden_states = hidden_states.view(
+                batch_size, seq_length, self.target_num_layers, self.target_hidden_size
+            ).permute(0, 2, 1, 3)
+            hidden_states = self.perceiver(hidden_states)
+        else:
+            hidden_states=self.fc(hidden_states)
 
         if past_key_values is not None:
             past_key_values_length = past_key_values[0][0].shape[2]

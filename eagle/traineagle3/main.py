@@ -8,6 +8,8 @@ parser.add_argument('--trainpath', type=str,
 parser.add_argument('--testpath', type=str,
                     default="/home/lyh/code/nlp/developing/vllmbase/vllm/gedata/0318.json")
 parser.add_argument('--savedir', type=str, default='0')
+parser.add_argument('--configpath', type=str, default='config.json',
+                    help='path to the draft model config (use config_perceiver_llama3_8b.json for EaglePerceiverResampler)')
 parser.add_argument("--local_rank", type=int, default=-1, help="local_rank for distributed training on gpus")
 parser = deepspeed.add_config_arguments(parser)
 args = parser.parse_args()
@@ -22,7 +24,7 @@ train_config = {
     "num_epochs": 40,
     "num_workers": 2,
     "max_len": 2048,
-    "config_path": "config.json",
+    "config_path": args.configpath,
     "gradient_checkpoint": True
 }
 
@@ -225,9 +227,8 @@ rank = deepspeed.comm.get_local_rank()
 world_size = deepspeed.comm.get_world_size()
 if global_rank == 0:
     import wandb
-
-    wandb.login(key="")
-    wandb.init(project="l382", entity="yuhui-li", config=ds_config)
+    wandb.login()
+    wandb.init(project=os.environ.get("WANDB_PROJECT", "eagle-perceiver"), config=ds_config)
 
 os.makedirs(args.savedir, exist_ok=True)
 

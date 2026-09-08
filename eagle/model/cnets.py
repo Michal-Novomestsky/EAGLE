@@ -35,11 +35,13 @@ try:
     from .configs import EConfig
     from .utils_c import *
     from .choices import *
+    from .perceiver import PerceiverResampler
 except:
     from configs import EConfig
     from utils_c import *
     from choices import *
     from utils import prepare_logits_processor
+    from perceiver import PerceiverResampler
 
 
 
@@ -485,7 +487,10 @@ class Model(nn.Module):
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.lm_head=nn.Linear(config.hidden_size,config.draft_vocab_size,bias=False)
-        if load_emb and not hasattr(config, "target_hidden_size"):
+        # Load the base model's embedding matrix whenever the draft hidden size
+        # matches the target's (EaglePerceiverResampler sets target_hidden_size
+        # explicitly, so compare values rather than checking attribute presence).
+        if load_emb and getattr(config, "target_hidden_size", config.hidden_size) == config.hidden_size:
             from safetensors import safe_open
             import json
             try:
@@ -528,7 +533,29 @@ class Model(nn.Module):
         # print("threshold",threshold)
         self.hidden_size = config.hidden_size
         self.midlayer = LlamaDecoderLayeremb(config)
-        if hasattr(config, "target_hidden_size"):
+        self.use_perceiver = getattr(config, "use_perceiver", False)
+        if self.use_perceiver:
+            # EaglePerceiverResampler: flatten the entire target residual stream
+            # (all layers) into a single token per position with a perceiver
+            # resampler instead of concatenating 3 layers + FC.
+            self.target_num_layers = getattr(config, "target_num_layers", None)
+            assert self.target_num_layers is not None, \
+                "config.target_num_layers must be set when use_perceiver=true"
+            self.target_hidden_size = getattr(config, "target_hidden_size", config.hidden_size)
+            perceiver_dim = getattr(config, "perceiver_dim", config.hidden_size)
+            assert getattr(config, "n_latents", 1) == 1, \
+                "n_latents > 1 is not supported by the EAGLE draft decoder yet"
+            self.perceiver = PerceiverResampler(
+                num_target_layers=self.target_num_layers,
+                d_target=self.target_hidden_size,
+                dim=perceiver_dim,
+                n_heads=getattr(config, "perceiver_n_heads", 16),
+                d_ff=getattr(config, "perceiver_d_ff", 4 * perceiver_dim),
+                num_layers=getattr(config, "perceiver_num_layers", 6),
+                n_latents=getattr(config, "n_latents", 1),
+                dropout=getattr(config, "perceiver_dropout", 0.1),
+            )
+        elif hasattr(config, "target_hidden_size"):
             self.fc = nn.Linear(config.target_hidden_size * 3, self.hidden_size, bias=False)
         else:
             self.fc = nn.Linear(config.hidden_size * 3, self.hidden_size, bias=False)
@@ -636,7 +663,18 @@ class Model(nn.Module):
 
         # hidden_states=self.act(self.fc(torch.cat((inputs_embeds,hidden_states),dim=-1)))
         inputs_embeds = inputs_embeds.to(hidden_states.dtype)
-        if hidden_states.shape[-1]!=inputs_embeds.shape[-1]:
+        if self.use_perceiver:
+            # Only compress when fed the packed target residual stream
+            # ([B, S, L*H]); during tree expansion the draft is called
+            # recurrently with its own [B, S, H] hidden states, which pass
+            # through untouched (same convention as the fc branch below).
+            if hidden_states.shape[-1]!=inputs_embeds.shape[-1]:
+                # packed [B, S, L*H] -> [B, L, S, H] -> perceiver -> [B, S, H]
+                hidden_states = hidden_states.view(
+                    batch_size, seq_length, self.target_num_layers, self.target_hidden_size
+                ).permute(0, 2, 1, 3)
+                hidden_states = self.perceiver(hidden_states)
+        elif hidden_states.shape[-1]!=inputs_embeds.shape[-1]:
             hidden_states = self.fc(hidden_states)
         # hidden_states = self.fc(hidden_states)
 

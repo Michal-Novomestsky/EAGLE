@@ -996,6 +996,11 @@ class LlamaModel(LlamaPreTrainedModel):
         )
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
+        # [MODIFIED] EaglePerceiverResampler: when enabled, hidden-state capture
+        # returns every layer's output (the entire residual stream) instead of
+        # the EAGLE-3 low/mid/high selection.
+        self.capture_all_hidden_states = False
+
         self.gradient_checkpointing = False
         # Initialize weights and apply final processing
         self.post_init()
@@ -1136,7 +1141,13 @@ class LlamaModel(LlamaPreTrainedModel):
 
         for idx, decoder_layer in enumerate(self.layers):
 
-            if idx==len(self.layers)-3 or idx==len(self.layers)//2 or idx==2:
+            if getattr(self, "capture_all_hidden_states", False):
+                # [MODIFIED] EaglePerceiverResampler: hidden_states at layer idx's
+                # input is the output of layer idx-1, so appending at idx >= 1
+                # yields outputs of layers 0..L-2 (skipping the embedding output).
+                if idx >= 1:
+                    all_hidden_states += (hidden_states,)
+            elif idx==len(self.layers)-3 or idx==len(self.layers)//2 or idx==2:
                 all_hidden_states += (hidden_states,)
 
             past_key_value = (
@@ -1177,10 +1188,15 @@ class LlamaModel(LlamaPreTrainedModel):
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
 
+        if getattr(self, "capture_all_hidden_states", False):
+            # [MODIFIED] EaglePerceiverResampler: output of the last layer
+            # (before the final norm), completing the per-layer stack.
+            all_hidden_states += (hidden_states,)
+
         hidden_states = self.norm(hidden_states)
 
         # add hidden states from the last decoder layer
-        if output_hidden_states:
+        if output_hidden_states and not getattr(self, "capture_all_hidden_states", False):
             all_hidden_states += (hidden_states,)
 
         # !!!

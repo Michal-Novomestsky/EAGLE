@@ -26,6 +26,8 @@
 
 nvidia-smi
 
+module load cuda/12.8
+
 DIR=/home/michaln/ml20_scratch/michaln/EAGLE
 eval "$("$DIR"/bin/micromamba shell hook -s bash -r ~/micromamba)"
 micromamba activate "$DIR"/venv/eagle-py312

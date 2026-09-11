@@ -215,16 +215,27 @@ class LlamaAttention(nn.Module):
         self._init_rope()
 
     def _init_rope(self):
-        # Require an explicit rope_theta (Llama-3 uses 500000). Do not silently
-        # default to 10000 — that hides misconfigured draft configs.
-        if getattr(self.config, "rope_theta", None) is None:
+        # Resolve theta from the plain attribute or transformers>=5 rope_parameters.
+        # Do not silently default to 10000 — that hides misconfigured draft configs.
+        rope_theta = getattr(self.config, "rope_theta", None)
+        if rope_theta is None:
+            for name in ("rope_parameters", "rope_scaling"):
+                container = getattr(self.config, name, None)
+                if isinstance(container, dict) and container.get("rope_theta") is not None:
+                    rope_theta = container["rope_theta"]
+                    break
+        if rope_theta is None:
             raise ValueError(
                 "config.rope_theta must be set explicitly "
                 "(e.g. 500000.0 for Llama-3); refusing to default to 10000"
             )
-        rope_theta = self.config.rope_theta
 
-        if self.config.rope_scaling is None:
+        scaling = self.config.rope_scaling
+        # null, or transformers>=5 normalized {"rope_type": "default", "rope_theta": ...}
+        if scaling is None or (
+            isinstance(scaling, dict)
+            and scaling.get("type", scaling.get("rope_type")) in (None, "default")
+        ):
             self.rotary_emb = LlamaRotaryEmbedding(
                 self.head_dim,
                 max_position_embeddings=self.max_position_embeddings,
@@ -233,10 +244,8 @@ class LlamaAttention(nn.Module):
             return
 
         # HF Llama-3.1 uses "rope_type"; older configs use "type".
-        scaling_type = self.config.rope_scaling.get(
-            "type", self.config.rope_scaling.get("rope_type")
-        )
-        scaling_factor = self.config.rope_scaling.get("factor")
+        scaling_type = scaling.get("type", scaling.get("rope_type"))
+        scaling_factor = scaling.get("factor")
         if scaling_type in ("linear", "dynamic") and scaling_factor is not None:
             emb_cls = (
                 LlamaLinearScalingRotaryEmbedding
@@ -255,7 +264,7 @@ class LlamaAttention(nn.Module):
         # implement that schedule; keep rope_scaling null in the draft config.
         raise ValueError(
             "Unsupported draft rope_scaling "
-            f"{self.config.rope_scaling!r}. For Llama-3/3.1 drafts set "
+            f"{scaling!r}. For Llama-3/3.1 drafts set "
             f'"rope_scaling": null and "rope_theta": {rope_theta} '
             f"(max_position_embeddings={self.max_position_embeddings})."
         )

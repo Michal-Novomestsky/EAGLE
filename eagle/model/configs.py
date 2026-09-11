@@ -93,6 +93,7 @@ class EConfig(PretrainedConfig):
         pretraining_tp=1,
         tie_word_embeddings=False,
         rope_scaling=None,
+        rope_theta=None,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -112,6 +113,9 @@ class EConfig(PretrainedConfig):
         self.rms_norm_eps = rms_norm_eps
         self.pretraining_tp = pretraining_tp
         self.use_cache = use_cache
+        # Keep rope_theta as a real attribute. transformers>=5 folds JSON
+        # rope_theta into rope_parameters and may leave config.rope_theta unset.
+        self.rope_theta = rope_theta
         self.rope_scaling = rope_scaling
         self._rope_scaling_validation()
 
@@ -123,23 +127,42 @@ class EConfig(PretrainedConfig):
             **kwargs,
         )
 
+        # Re-assert after PretrainedConfig RoPE standardization.
+        if self.rope_theta is None:
+            params = getattr(self, "rope_parameters", None) or {}
+            if isinstance(params, dict) and params.get("rope_theta") is not None:
+                self.rope_theta = params["rope_theta"]
+            elif isinstance(self.rope_scaling, dict) and self.rope_scaling.get("rope_theta") is not None:
+                self.rope_theta = self.rope_scaling["rope_theta"]
+        elif rope_theta is not None:
+            self.rope_theta = rope_theta
+
     def _rope_scaling_validation(self):
         """
         Validate the `rope_scaling` configuration.
+
+        Draft models support null / transformers-5 {"rope_type": "default", ...} /
+        {"type"|"rope_type": "linear"|"dynamic", "factor": ...}.
         """
         if self.rope_scaling is None:
             return
 
-        if not isinstance(self.rope_scaling, dict) or len(self.rope_scaling) != 2:
+        if not isinstance(self.rope_scaling, dict):
             raise ValueError(
-                "`rope_scaling` must be a dictionary with with two fields, `name` and `factor`, "
-                f"got {self.rope_scaling}"
+                f"`rope_scaling` must be null or a dict, got {self.rope_scaling!r}"
             )
-        rope_scaling_type = self.rope_scaling.get("type", None)
+
+        rope_scaling_type = self.rope_scaling.get("type", self.rope_scaling.get("rope_type"))
+        if rope_scaling_type in (None, "default"):
+            return
         rope_scaling_factor = self.rope_scaling.get("factor", None)
-        if rope_scaling_type is None or rope_scaling_type not in ["linear", "dynamic"]:
+        if rope_scaling_type not in ("linear", "dynamic"):
             raise ValueError(
-                f"`rope_scaling`'s name field must be one of ['linear', 'dynamic'], got {rope_scaling_type}"
+                "Unsupported draft `rope_scaling` "
+                f"{self.rope_scaling!r}. Set \"rope_scaling\": null and set "
+                "\"rope_theta\" (e.g. 500000.0 for Llama-3)."
             )
         if rope_scaling_factor is None or not isinstance(rope_scaling_factor, float) or rope_scaling_factor <= 1.0:
-            raise ValueError(f"`rope_scaling`'s factor field must be an float > 1, got {rope_scaling_factor}")
+            raise ValueError(
+                f"`rope_scaling`'s factor field must be a float > 1, got {rope_scaling_factor}"
+            )

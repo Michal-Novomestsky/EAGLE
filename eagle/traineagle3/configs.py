@@ -126,20 +126,29 @@ class EConfig(PretrainedConfig):
     def _rope_scaling_validation(self):
         """
         Validate the `rope_scaling` configuration.
+
+        Draft models only support null / {"type"|"rope_type": "linear"|"dynamic", "factor": ...}.
+        Target Llama-3.1 dicts ({"rope_type": "llama3", ...}) must not be copied into the draft
+        config — use "rope_scaling": null with an explicit rope_theta instead.
         """
         if self.rope_scaling is None:
             return
 
-        if not isinstance(self.rope_scaling, dict) or len(self.rope_scaling) != 2:
+        if not isinstance(self.rope_scaling, dict):
             raise ValueError(
-                "`rope_scaling` must be a dictionary with with two fields, `name` and `factor`, "
-                f"got {self.rope_scaling}"
+                f"`rope_scaling` must be null or a dict, got {self.rope_scaling!r}"
             )
-        rope_scaling_type = self.rope_scaling.get("type", None)
+
+        rope_scaling_type = self.rope_scaling.get("type", self.rope_scaling.get("rope_type"))
         rope_scaling_factor = self.rope_scaling.get("factor", None)
-        if rope_scaling_type is None or rope_scaling_type not in ["linear", "dynamic"]:
+        if rope_scaling_type not in ("linear", "dynamic"):
             raise ValueError(
-                f"`rope_scaling`'s name field must be one of ['linear', 'dynamic'], got {rope_scaling_type}"
+                "Unsupported draft `rope_scaling` "
+                f"{self.rope_scaling!r}. Set \"rope_scaling\": null and set "
+                "\"rope_theta\" (e.g. 500000.0 for Llama-3); do not copy the "
+                "target model's llama3 rope_scaling into the draft config."
             )
         if rope_scaling_factor is None or not isinstance(rope_scaling_factor, float) or rope_scaling_factor <= 1.0:
-            raise ValueError(f"`rope_scaling`'s factor field must be an float > 1, got {rope_scaling_factor}")
+            raise ValueError(
+                f"`rope_scaling`'s factor field must be a float > 1, got {rope_scaling_factor}"
+            )

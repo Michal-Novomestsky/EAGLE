@@ -23,7 +23,7 @@ train_config = {
     "bs": ds_config["train_micro_batch_size_per_gpu"],
     "num_epochs": 40,
     "num_workers": 2,
-    "max_len": 2048,
+    "max_len": 1024,
     "config_path": args.configpath,
     "gradient_checkpoint": True
 }

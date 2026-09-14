@@ -29,7 +29,7 @@ import os
 from transformers.integrations.deepspeed import HfDeepSpeedConfig
 from transformers.activations import ACT2FN
 from transformers import AutoTokenizer
-from modeling_llama_kv import LlamaForCausalLM
+from transformers import LlamaForCausalLM
 from configs import EConfig
 from safetensors import safe_open
 from datasets import load_dataset
@@ -567,7 +567,6 @@ class Model(nn.Module):
                 n_latents=getattr(config, "n_latents", 1),
                 dropout=getattr(config, "perceiver_dropout", 0.1),
             )
-            self.target_model.model.capture_all_hidden_states = True
         else:
             self.fc=nn.Linear(self.hidden_size*3, self.hidden_size, bias=False)
         for param in self.target_model.parameters():
@@ -784,17 +783,18 @@ class Model(nn.Module):
     @torch.no_grad()
     def dataprepare(self, input_ids, attention_mask, loss_mask):
         device = input_ids.device
-        outs = self.target_model(input_ids=input_ids, attention_mask=attention_mask)
+        outs = self.target_model(input_ids=input_ids, attention_mask=attention_mask,
+                                 output_hidden_states=True)
         if self.use_perceiver:
-            # capture_all_hidden_states is enabled on the target model, so
-            # outs.hidden_states holds every layer's output (no embeddings).
+            # EaglePerceiverResampler: the entire residual stream, skipping the embedding entry.
             # Pack them along the feature dim -> [B, S, L*H]; the perceiver
             # reshapes this back to [B, L, S, H] in forward().
-            hidden_states = torch.cat(list(outs.hidden_states), dim=-1)
+            hidden_states = torch.cat(list(outs.hidden_states[1:]), dim=-1)
         else:
-            hidden_states0 = outs.hidden_states[0]
-            hidden_states1 = outs.hidden_states[1]
-            hidden_states2 = outs.hidden_states[2]
+            L = len(outs.hidden_states) - 1  # exclude the embedding entry
+            hidden_states0 = outs.hidden_states[2]
+            hidden_states1 = outs.hidden_states[L // 2]
+            hidden_states2 = outs.hidden_states[L - 3]
             hidden_states=torch.cat((hidden_states0,hidden_states1,hidden_states2),dim=-1)
         # hidden_states=torch.cat((hidden_states0,hidden_states1),dim=-1)
         target = outs.logits

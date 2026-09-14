@@ -588,9 +588,9 @@ class Model(nn.Module):
                 dropout=getattr(config, "perceiver_dropout", 0.1),
             )
         elif hasattr(config, "target_hidden_size"):
-            self.fc = nn.Linear(config.target_hidden_size * 3, self.hidden_size, bias=False)
+            self.fc = nn.Linear(config.target_hidden_size * 1, self.hidden_size, bias=False)
         else:
-            self.fc = nn.Linear(config.hidden_size * 3, self.hidden_size, bias=False)
+            self.fc = nn.Linear(config.hidden_size * 1, self.hidden_size, bias=False)
         self.norm=LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.logsoftmax = nn.LogSoftmax(dim=-1)
 

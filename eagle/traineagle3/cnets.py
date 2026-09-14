@@ -543,7 +543,7 @@ class Model(nn.Module):
         self.draft_vocab_size = config.draft_vocab_size
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.length = 7
-        self.target_model = LlamaForCausalLM.from_pretrained(path, torch_dtype=torch.float16)
+        self.target_model = LlamaForCausalLM.from_pretrained(path, torch_dtype=torch.bfloat16)
         self.target_model.eval()
         self.use_perceiver = getattr(config, "use_perceiver", False)
         if self.use_perceiver:

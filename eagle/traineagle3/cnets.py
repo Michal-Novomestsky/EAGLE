@@ -895,6 +895,7 @@ class Model(nn.Module):
                     cache_hidden,
                     attention_mask,
                     position_ids,
+                    use_reentrant=False,
                 )
             else:
 

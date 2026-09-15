@@ -13,11 +13,37 @@ latent queries over it, emitting ``n_latents`` tokens per position (default 1,
 i.e. the whole residual stream is flattened into a single token).
 """
 
+import json
+import math
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from typing import Optional
+
+# ---------------------------------------------------------------------------
+# Forward-stat logging, for diagnosing training dynamics vs. the EAGLE-3 FC.
+# Set PERCEIVER_LOG_EVERY=N to emit stats every N training forwards
+# (0 disables). Lines are prefixed "PERCEIVER_STATS " and printed to stdout
+# (captured by SLURM into the .out file), and optionally appended as JSONL to
+# $PERCEIVER_LOG_FILE if set.
+# ---------------------------------------------------------------------------
+_LOG_EVERY = int(os.environ.get("PERCEIVER_LOG_EVERY", "50"))
+_LOG_FILE = os.environ.get("PERCEIVER_LOG_FILE")
+_fwd_count = 0
+
+
+def _rms(x: torch.Tensor) -> float:
+    return x.float().pow(2).mean().sqrt().item()
+
+
+def _emit(stats: dict) -> None:
+    line = "PERCEIVER_STATS " + json.dumps(stats)
+    print(line, flush=True)
+    if _LOG_FILE:
+        with open(_LOG_FILE, "a") as f:
+            f.write(json.dumps(stats) + "\n")
 
 
 class RMSNorm(nn.Module):
@@ -62,6 +88,10 @@ class MultiHeadAttention(nn.Module):
         self.wv = nn.Linear(dim, dim, bias=False)
         self.wo = nn.Linear(dim, dim, bias=False)
 
+        # Set by PerceiverResampler on logging steps; stats land in _stats.
+        self._collect_stats = False
+        self._stats: dict = {}
+
     def forward(
         self,
         x_q: torch.Tensor,
@@ -81,12 +111,31 @@ class MultiHeadAttention(nn.Module):
         v = v.view(B, L_kv, self.n_heads, self.head_dim).transpose(1, 2)
 
         dropout_p = self.dropout if self.training else 0.0
+
+        if self._collect_stats:
+            # Recompute logits under no_grad purely for diagnostics; this runs
+            # only every PERCEIVER_LOG_EVERY forwards, so the cost is negligible.
+            with torch.no_grad():
+                QK = q.float() @ k.float().transpose(-2, -1) / math.sqrt(self.head_dim)
+                probs = F.softmax(QK, dim=-1)
+                entropy = -(probs * probs.clamp_min(1e-12).log()).sum(-1).mean()
+                # max entropy over L_kv keys = log(L_kv); near 1 => uniform
+                self._stats = {
+                    "qk_std": QK.std().item(),
+                    "qk_absmax": QK.abs().max().item(),
+                    "softmax_entropy_frac": (entropy / math.log(L_kv)).item(),
+                }
+
         out = F.scaled_dot_product_attention(
             q, k, v, attn_mask=attention_mask, dropout_p=dropout_p
         )
 
         out = out.transpose(1, 2).contiguous().view(B, L_q, D)
-        return self.wo(out)
+        out = self.wo(out)
+        if self._collect_stats:
+            with torch.no_grad():
+                self._stats["attn_out_rms"] = _rms(out)
+        return out
 
 
 class TransformerBlock(nn.Module):
@@ -168,6 +217,14 @@ class PerceiverResampler(nn.Module):
         batch_size, num_layers, seq_len, _ = hidden_states.shape
         _, n_latents, dim = self.latent_queries.shape
 
+        global _fwd_count
+        log_this = self.training and _LOG_EVERY > 0 and _fwd_count % _LOG_EVERY == 0
+        _fwd_count += 1
+
+        if log_this:
+            with torch.no_grad():
+                input_rms = _rms(hidden_states)
+
         # Send to perceiver dim and add layer encoding
         hidden_states = self.expert2latent(hidden_states)
         hidden_states = hidden_states + self.layer_encoding
@@ -177,9 +234,36 @@ class PerceiverResampler(nn.Module):
         hidden_states = hidden_states.reshape(batch_size * seq_len, num_layers, dim)
 
         latent_queries = self.latent_queries.expand(batch_size * seq_len, -1, -1)
+        if log_this:
+            with torch.no_grad():
+                anchor = latent_queries.detach().clone()
+                kv_rms = _rms(hidden_states)
+
+        layer_stats = []
         for layer in self.layers:
             kv = torch.cat([hidden_states, latent_queries], dim=1)
+            layer.attention._collect_stats = log_this
             latent_queries = layer(q=latent_queries, kv=kv)
+            if log_this:
+                layer_stats.append(layer.attention._stats)
+                layer.attention._collect_stats = False
+
+        if log_this:
+            with torch.no_grad():
+                signal = latent_queries - anchor
+                stats = {
+                    "fwd": _fwd_count - 1,
+                    "input_rms": input_rms,
+                    "kv_rms_prenorm": kv_rms,
+                    "layer_enc_rms": _rms(self.layer_encoding),
+                    "anchor_rms": _rms(anchor),
+                    "out_rms": _rms(latent_queries),
+                    # Position-dependent signal relative to the constant latent
+                    # anchor: ~0 means the draft sees mostly a constant vector.
+                    "signal_over_anchor": _rms(signal) / max(_rms(anchor), 1e-8),
+                    "layers": layer_stats,
+                }
+            _emit(stats)
 
         # [B*S, n_latents, D] --> [B, S*n_latents, D]
         return latent_queries.view(batch_size, seq_len * n_latents, dim)

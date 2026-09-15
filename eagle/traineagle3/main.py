@@ -52,6 +52,57 @@ from tqdm import tqdm
 import numpy as np
 from transformers import PreTrainedTokenizerBase, get_linear_schedule_with_warmup
 
+# Gradient-RMS logging to file/stdout (not wandb). Every EAGLE_GRAD_LOG_EVERY
+# steps (0 disables), writes one JSON line per step to
+# <savedir>/grad_log.jsonl and echoes it to stdout prefixed with "GRAD_STATS ".
+GRAD_LOG_EVERY = int(os.environ.get("EAGLE_GRAD_LOG_EVERY", "50"))
+
+
+def _param_grad_rms(param):
+    """Grad RMS that works under ZeRO. Called on all ranks (collective-safe)."""
+    g = None
+    try:
+        from deepspeed.utils import safe_get_full_grad
+        g = safe_get_full_grad(param)
+    except Exception:
+        g = None
+    if g is None:
+        g = param.grad
+    if g is None:
+        return None
+    return float(g.float().pow(2).mean().sum().item()), g.numel()
+
+
+def _grad_bucket(name):
+    # Fine-grained for the perceiver (it's small); coarse for the rest.
+    if name.startswith("perceiver."):
+        return name.rsplit(".", 1)[0]
+    return name.split(".")[0]
+
+
+def log_grad_stats(engine, step, epoch, path, global_rank, loss=None, acces=None):
+    ssq, cnt = {}, {}
+    for name, p in engine.module.named_parameters():
+        res = _param_grad_rms(p)
+        if res is None:
+            continue
+        p_ssq, n = res
+        b = _grad_bucket(name)
+        ssq[b] = ssq.get(b, 0.0) + p_ssq
+        cnt[b] = cnt.get(b, 0) + n
+    if global_rank != 0:
+        return
+    rec = {
+        "step": step,
+        "epoch": epoch,
+        "loss": loss,
+        "acces": acces,
+        "grad_rms": {b: (ssq[b] / cnt[b]) ** 0.5 for b in sorted(ssq)},
+    }
+    with open(path, "a") as f:
+        f.write(json.dumps(rec) + "\n")
+    print("GRAD_STATS " + json.dumps(rec), flush=True)
+
 
 
 def build_dataset_rank(
@@ -287,6 +338,13 @@ for epoch in range(start_epoch, num_epochs):
         loss = ploss
         model_engine.backward(loss)
 
+        grad_step = epoch * len(train_loader) + batch_idx
+        if GRAD_LOG_EVERY > 0 and grad_step % GRAD_LOG_EVERY == 0:
+            log_grad_stats(
+                model_engine, grad_step, epoch,
+                os.path.join(args.savedir, "grad_log.jsonl"), global_rank,
+                loss=loss.item(), acces=[a for a in acces],
+            )
 
         model_engine.step()
 

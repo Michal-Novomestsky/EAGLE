@@ -45,4 +45,4 @@ PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True deepspeed --num_gpus 1 main.py 
     --basepath "$DIR/models/Llama-3.1-8B-Instruct" \
     --trainpath "$DIR/data/sharegpt_train.jsonl" \
     --testpath "$DIR/data/sharegpt_test.jsonl" \
-    --savedir "$DIR/runs/eagle3-llama3-8b_last-layer"
+    --savedir "$DIR/runs/eagle3-llama3-8b"

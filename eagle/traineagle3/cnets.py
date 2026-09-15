@@ -568,7 +568,7 @@ class Model(nn.Module):
                 dropout=getattr(config, "perceiver_dropout", 0.1),
             )
         else:
-            self.fc=nn.Linear(self.hidden_size*1, self.hidden_size, bias=False)
+            self.fc=nn.Linear(self.hidden_size*3, self.hidden_size, bias=False)
         for param in self.target_model.parameters():
             param.requires_grad = False
 
@@ -792,10 +792,10 @@ class Model(nn.Module):
             hidden_states = torch.cat(list(outs.hidden_states[1:]), dim=-1)
         else:
             L = len(outs.hidden_states) - 1  # exclude the embedding entry
-            # hidden_states0 = outs.hidden_states[2]
-            # hidden_states1 = outs.hidden_states[L // 2]
-            hidden_states = outs.hidden_states[L - 3]
-            # hidden_states=torch.cat((hidden_states0,hidden_states1,hidden_states2),dim=-1)
+            hidden_states0 = outs.hidden_states[2]
+            hidden_states1 = outs.hidden_states[L // 2]
+            hidden_states2 = outs.hidden_states[L - 3]
+            hidden_states=torch.cat((hidden_states0,hidden_states1,hidden_states2),dim=-1)
         # hidden_states=torch.cat((hidden_states0,hidden_states1),dim=-1)
         target = outs.logits
         target = padding(target, left=False)

@@ -197,6 +197,7 @@ class PerceiverResampler(nn.Module):
         self.dim = dim
         self.n_latents = n_latents
 
+        self.pre_norm = RMSNorm(dim)
         self.layer_encoding = nn.Parameter(torch.randn(1, num_target_layers, 1, dim))
         self.latent_queries = nn.Parameter(torch.randn(1, n_latents, dim))
         self.expert2latent = nn.Linear(d_target, dim, bias=False)
@@ -226,6 +227,7 @@ class PerceiverResampler(nn.Module):
                 input_rms = _rms(hidden_states)
 
         # Send to perceiver dim and add layer encoding
+        hidden_states = self.pre_norm(hidden_states)
         hidden_states = self.expert2latent(hidden_states)
         hidden_states = hidden_states + self.layer_encoding
 

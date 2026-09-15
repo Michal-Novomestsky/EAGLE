@@ -75,6 +75,7 @@ for BENCH in mt_bench gsm8k; do
     if [[ ! -f "$BASE_FILE" ]]; then
         python3 -m eagle.evaluation.gen_baseline_answer_llama3chat \
             --base-model-path "$BASE" \
+            --ea-model-path "$EA_PATH" \
             --model-id baseline-llama3-8b \
             --bench-name "$BENCH" \
             --answer-file "$BASE_FILE" \

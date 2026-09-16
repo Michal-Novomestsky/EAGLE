@@ -555,14 +555,12 @@ class Model(nn.Module):
                 "config.target_num_layers must be set when use_perceiver=true"
             self.target_hidden_size = getattr(config, "target_hidden_size", config.hidden_size)
             perceiver_dim = getattr(config, "perceiver_dim", config.hidden_size)
-            draft_hidden_size = getattr(config, "draft_hidden_size", config.hidden_size)
             assert getattr(config, "n_latents", 1) == 1, \
                 "n_latents > 1 is not supported by the EAGLE draft decoder yet"
             self.perceiver = PerceiverResampler(
                 num_target_layers=self.target_num_layers,
                 d_target=self.target_hidden_size,
                 dim=perceiver_dim,
-                draft_hidden_size=draft_hidden_size,
                 n_heads=getattr(config, "perceiver_n_heads", 16),
                 d_ff=getattr(config, "perceiver_d_ff", 4 * perceiver_dim),
                 num_layers=getattr(config, "perceiver_num_layers", 6),

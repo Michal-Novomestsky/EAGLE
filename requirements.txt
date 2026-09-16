@@ -9,3 +9,6 @@ sentencepiece==0.1.99
 protobuf==3.19.0
 wandb
 pydantic>=1,<2
+deepspeed<0.16
+datasets
+tiktoken

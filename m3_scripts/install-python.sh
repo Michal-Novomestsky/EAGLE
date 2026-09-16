@@ -22,6 +22,5 @@ eval "$(./bin/micromamba shell hook -s bash -r "$MAMBA_ROOT")"
 micromamba activate "$ENV_PATH"
 
 pip3 install -r requirements.txt
-pip3 install "deepspeed<0.16" datasets tiktoken
 
 python --version

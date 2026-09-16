@@ -172,7 +172,9 @@ class PerceiverResampler(nn.Module):
         num_target_layers: number of target-model layers whose hidden states are
             stacked as the perceiver input (L).
         d_target: hidden size of the target model.
-        dim: perceiver latent width (typically the draft model's hidden size).
+        dim: internal perceiver latent width.
+        draft_hidden_size: output width passed to the draft decoder (via
+            ``latent2decoder``).
         n_heads: attention heads per block.
         d_ff: SwiGLU FFN hidden size.
         num_layers: number of TransformerBlocks (default 6, as in Flamingo).
@@ -185,6 +187,7 @@ class PerceiverResampler(nn.Module):
         num_target_layers: int,
         d_target: int,
         dim: int,
+        draft_hidden_size: int,
         n_heads: int,
         d_ff: int,
         num_layers: int = 6,
@@ -195,12 +198,14 @@ class PerceiverResampler(nn.Module):
         self.num_target_layers = num_target_layers
         self.d_target = d_target
         self.dim = dim
+        self.draft_hidden_size = draft_hidden_size
         self.n_latents = n_latents
 
-        self.pre_norm = RMSNorm(dim)
-        self.layer_encoding = nn.Parameter(torch.randn(1, num_target_layers, 1, dim))
+        self.pre_norm = RMSNorm(d_target)
+        self.layer_encoding = nn.Parameter(torch.randn(1, num_target_layers, 1, d_target))
         self.latent_queries = nn.Parameter(torch.randn(1, n_latents, dim))
         self.expert2latent = nn.Linear(d_target, dim, bias=False)
+        self.latent2decoder = nn.Linear(dim, draft_hidden_size, bias=False)
 
         self.layers = nn.ModuleList(
             [TransformerBlock(dim, n_heads, d_ff, dropout) for _ in range(num_layers)]
@@ -212,8 +217,8 @@ class PerceiverResampler(nn.Module):
             hidden_states: [B, L, S, d_target] (target layers L, sequence length S)
 
         Returns:
-            [B, S * n_latents, dim], where latents for token j occupy columns
-            [j * n_latents : (j + 1) * n_latents].
+            [B, S * n_latents, draft_hidden_size], where latents for token j
+            occupy columns [j * n_latents : (j + 1) * n_latents].
         """
         batch_size, num_layers, seq_len, _ = hidden_states.shape
         _, n_latents, dim = self.latent_queries.shape
@@ -226,10 +231,10 @@ class PerceiverResampler(nn.Module):
             with torch.no_grad():
                 input_rms = _rms(hidden_states)
 
-        # Send to perceiver dim and add layer encoding
+        # Project to perceiver dim, normalize, and add layer encoding
         hidden_states = self.pre_norm(hidden_states)
-        hidden_states = self.expert2latent(hidden_states)
         hidden_states = hidden_states + self.layer_encoding
+        hidden_states = self.expert2latent(hidden_states)
 
         # [B, L, S, D] --> [B*S, L, D]
         hidden_states = hidden_states.permute(0, 2, 1, 3)
@@ -267,5 +272,6 @@ class PerceiverResampler(nn.Module):
                 }
             _emit(stats)
 
-        # [B*S, n_latents, D] --> [B, S*n_latents, D]
-        return latent_queries.view(batch_size, seq_len * n_latents, dim)
+        # [B*S, n_latents, dim] --> [B, S*n_latents, draft_hidden_size]
+        latent_queries = self.latent2decoder(latent_queries)
+        return latent_queries.view(batch_size, seq_len * n_latents, self.draft_hidden_size)
